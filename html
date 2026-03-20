@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Check-in Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; padding: 24px 20px; background: #f5f4f0; min-height: 100vh; }
+    h2 { font-size: 18px; font-weight: 500; margin-bottom: 20px; color: #1a1a18; }
+    .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; border: 0.5px solid #ddd; }
+    label { font-size: 13px; color: #666; display: block; margin-bottom: 6px; }
+    input { width: 100%; padding: 10px 12px; border-radius: 8px; border: 0.5px solid #ccc; font-size: 15px; background: #fff; color: #1a1a18; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+    .btn { width: 100%; padding: 13px; border-radius: 10px; border: none; font-size: 15px; font-weight: 500; cursor: pointer; margin-top: 4px; }
+    .btn-gps  { background: #185FA5; color: #fff; margin-bottom: 10px; }
+    .btn-check{ background: #1a1a18; color: #fff; }
+    .result { padding: 16px; border-radius: 10px; font-size: 15px; font-weight: 500; display: flex; align-items: center; gap: 10px; margin-top: 14px; display: none; }
+    .ok   { background: #E1F5EE; color: #085041; }
+    .fail { background: #FCEBEB; color: #791F1F; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .dot-ok { background: #0F6E56; } .dot-fail { background: #A32D2D; }
+    .meta { font-size: 12px; color: #888; margin-top: 8px; }
+    canvas { width: 100%; border-radius: 10px; border: 0.5px solid #ddd; display: block; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <h2>เช็คอินเข้างาน</h2>
+
+  <div class="card">
+    <button class="btn btn-gps" onclick="useGPS()">ใช้ GPS ปัจจุบัน</button>
+    <div class="row">
+      <div><label>Latitude</label><input id="lat" placeholder="13.838051" inputmode="decimal"></div>
+      <div><label>Longitude</label><input id="lng" placeholder="100.593804" inputmode="decimal"></div>
+    </div>
+    <button class="btn btn-check" onclick="checkIn()">เช็คอิน</button>
+    <div id="result" class="result">
+      <span class="dot" id="dot"></span>
+      <span id="result-text"></span>
+    </div>
+    <p class="meta" id="meta"></p>
+  </div>
+
+  <canvas id="map" height="280"></canvas>
+
+  <script>
+    const POLYGON = [
+      [100.5938037,13.838051],[100.5938186,13.8380444],[100.5938333,13.8380395],
+      [100.5938497,13.8380391],[100.5938662,13.8380417],[100.59389,13.8380554],
+      [100.5939175,13.8380802],[100.5939161,13.838086],[100.5939111,13.8380893],
+      [100.5938082,13.8380925],[100.5937998,13.8381056],[100.5937864,13.838113],
+      [100.5937723,13.8381127],[100.5937592,13.8381078],[100.5937472,13.838099],
+      [100.5937388,13.8380873],[100.5937344,13.8380813],[100.5936747,13.8380822],
+      [100.593675,13.83809],[100.593088,13.8381108],[100.5930819,13.8379488],
+      [100.5930954,13.8379483],[100.5930948,13.837933],[100.593237,13.837928],
+      [100.5932376,13.8379433],[100.5936812,13.8379276],[100.593684,13.8380027],
+      [100.5936719,13.8380031],[100.5937448,13.838044],[100.5937465,13.8380385],
+      [100.5937542,13.8380295],[100.593765,13.8380241],[100.593777,13.8380232],
+      [100.593786,13.8380256],[100.5937938,13.8380305],[100.5937998,13.8380375],
+      [100.5938039,13.8380492],[100.5938037,13.838051]
+    ];
+
+    function pip(lng, lat, poly) {
+      let inside = false;
+      for (let i = 0, j = poly.length-1; i < poly.length; j = i++) {
+        const [xi,yi] = poly[i], [xj,yj] = poly[j];
+        if (((yi>lat)!==(yj>lat)) && (lng < (xj-xi)*(lat-yi)/(yj-yi)+xi)) inside = !inside;
+      }
+      return inside;
+    }
+
+    function haversine(la1,ln1,la2,ln2) {
+      const R=6371000, d2r=Math.PI/180;
+      const dLa=(la2-la1)*d2r, dLn=(ln2-ln1)*d2r;
+      const a=Math.sin(dLa/2)**2+Math.cos(la1*d2r)*Math.cos(la2*d2r)*Math.sin(dLn/2)**2;
+      return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+    }
+
+    function centroid(poly) {
+      let la=0,ln=0;
+      poly.forEach(p=>{ln+=p[0];la+=p[1];});
+      return [ln/poly.length,la/poly.length];
+    }
+
+    function drawMap(uLng, uLat, inside) {
+      const canvas = document.getElementById('map');
+      canvas.width = canvas.offsetWidth * window.devicePixelRatio;
+      canvas.height = 280 * window.devicePixelRatio;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+      const W = canvas.offsetWidth, H = 280;
+
+      ctx.fillStyle = '#f0efe9'; ctx.fillRect(0,0,W,H);
+
+      const lngs=POLYGON.map(p=>p[0]), lats=POLYGON.map(p=>p[1]);
+      let minLng=Math.min(...lngs), maxLng=Math.max(...lngs);
+      let minLat=Math.min(...lats), maxLat=Math.max(...lats);
+      if (uLng!==null) { minLng=Math.min(minLng,uLng); maxLng=Math.max(maxLng,uLng); minLat=Math.min(minLat,uLat); maxLat=Math.max(maxLat,uLat); }
+      const pad=0.00018;
+      minLng-=pad; maxLng+=pad; minLat-=pad; maxLat+=pad;
+
+      const scale=Math.min((W-40)/(maxLng-minLng),(H-40)/(maxLat-minLat));
+      const offX=20+((W-40)-(maxLng-minLng)*scale)/2;
+      const offY=20+((H-40)-(maxLat-minLat)*scale)/2;
+      const toX=lng=>offX+(lng-minLng)*scale;
+      const toY=lat=>offY+(maxLat-lat)*scale;
+
+      ctx.beginPath();
+      POLYGON.forEach((p,i)=>{ i===0?ctx.moveTo(toX(p[0]),toY(p[1])):ctx.lineTo(toX(p[0]),toY(p[1])); });
+      ctx.closePath();
+      ctx.fillStyle='rgba(55,138,221,0.15)'; ctx.fill();
+      ctx.strokeStyle='#185FA5'; ctx.lineWidth=2; ctx.stroke();
+
+      if (uLng!==null) {
+        const ux=toX(uLng), uy=toY(uLat);
+        ctx.beginPath(); ctx.arc(ux,uy,8,0,Math.PI*2);
+        ctx.fillStyle=inside?'#1D9E75':'#E24B4A'; ctx.fill();
+        ctx.strokeStyle='#fff'; ctx.lineWidth=2.5; ctx.stroke();
+        ctx.fillStyle='#1a1a18'; ctx.font='12px sans-serif';
+        ctx.fillText(inside?'คุณอยู่ที่นี่ (ผ่าน)':'คุณอยู่ที่นี่ (ไม่ผ่าน)', ux+12, uy+4);
+      }
+    }
+
+    function useGPS() {
+      if (!navigator.geolocation) { alert('เบราว์เซอร์ไม่รองรับ GPS'); return; }
+      navigator.geolocation.getCurrentPosition(pos => {
+        document.getElementById('lat').value = pos.coords.latitude.toFixed(7);
+        document.getElementById('lng').value = pos.coords.longitude.toFixed(7);
+        checkIn();
+      }, err => alert('ขอ GPS ไม่ได้: ' + err.message), { enableHighAccuracy: true });
+    }
+
+    function checkIn() {
+      const lat=parseFloat(document.getElementById('lat').value);
+      const lng=parseFloat(document.getElementById('lng').value);
+      if (isNaN(lat)||isNaN(lng)) { alert('กรอกพิกัดให้ครบ'); return; }
+      const inside=pip(lng,lat,POLYGON);
+      const [cLng,cLat]=centroid(POLYGON);
+      const dist=haversine(lat,lng,cLat,cLng);
+      const res=document.getElementById('result');
+      res.style.display='flex';
+      res.className='result '+(inside?'ok':'fail');
+      document.getElementById('dot').className='dot '+(inside?'dot-ok':'dot-fail');
+      document.getElementById('result-text').textContent=inside?'เช็คอินสำเร็จ — อยู่ในขอบเขตอาคาร':'เช็คอินไม่ได้ — อยู่นอกขอบเขตอาคาร';
+      document.getElementById('meta').textContent='ห่างจากกึ่งกลางตึก '+Math.round(dist)+' เมตร';
+      drawMap(lng,lat,inside);
+    }
+
+    drawMap(null,null,false);
+  </script>
+</body>
+</html>
